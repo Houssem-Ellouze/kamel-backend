@@ -144,7 +144,6 @@ public class ApiController {
         if (isNew != null) product.setNew(isNew);
         if (availability != null) product.setA(availability.getLabel());
 
-        // Description : champ absent = on ne touche à rien ; champ vide = on efface la description
         if (description != null) {
             product.setD(cleanDescription(description));
         }
@@ -211,8 +210,6 @@ public class ApiController {
                 if (p == null) {
                     p = productRepository.findById(l.k()).orElse(null);
                 }
-                log.info("Ligne reçue : k={} n={} p={} -> produit en base : {}",
-                        l.k(), l.n(), l.p(), p != null ? p.getN() : "INTROUVABLE");
 
                 String nomProduit;
                 double prix;
@@ -221,7 +218,6 @@ public class ApiController {
                     nomProduit = p.getN();
                     prix = orZero(parseAmount(p.getP()));
                 } else {
-                    log.warn("Produit avec la clé '{}' introuvable dans le catalogue.", l.k());
                     nomProduit = (l.n() != null && !l.n().isBlank()) ? l.n().trim() : "Article " + l.k();
                     prix = orZero(parseAmount(l.p()));
                 }
@@ -250,7 +246,6 @@ public class ApiController {
             Order saved = orderRepository.save(orderToSave);
             String orderId = saved != null && saved.id() != null ? String.valueOf(saved.id()) : "";
 
-            log.info("Commande enregistrée avec succès, ID : {}", orderId);
             return Map.of("id", orderId);
 
         } catch (ResponseStatusException e) {
@@ -322,7 +317,6 @@ public class ApiController {
     // 🔧 MÉTHODES UTILITAIRES
     // ==========================================
 
-    /** Nettoie la description : trim, vide -> null, limitée à 500 caractères. */
     private String cleanDescription(String d) {
         if (d == null) return null;
         String t = d.trim();
@@ -389,7 +383,6 @@ public class ApiController {
         String lowerName = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase();
         boolean imageByType = contentType != null && contentType.startsWith("image/");
         boolean imageByExt = lowerName.matches(".*\\.(png|jpe?g|webp|gif|avif|jfif|bmp)$");
-        log.info("Fichier reçu : nom={} type={} taille={} octets", file.getOriginalFilename(), contentType, file.getSize());
         if (!imageByType && !imageByExt) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "Le fichier doit être une image (png, jpg, webp...) — type reçu : " + contentType);
