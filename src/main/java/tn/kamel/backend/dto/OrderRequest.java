@@ -13,5 +13,10 @@ public record OrderRequest(
         @Size(max = 1000) String note,
         @NotEmpty @Size(max = 30) List<@Valid LineRequest> lignes
 ) {
-    public record LineRequest(@NotBlank String k, @Min(1) @Max(99) int qty) {}
+    public record LineRequest(
+            @NotBlank String k,
+            @Min(1) @Max(99) int qty,
+            @Size(max = 120) String n,      // nom du produit envoyé par le site (secours)
+            @Size(max = 60) String p        // prix affiché envoyé par le site (secours)
+    ) {}
 }

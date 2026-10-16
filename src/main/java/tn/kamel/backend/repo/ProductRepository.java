@@ -3,4 +3,8 @@ package tn.kamel.backend.repo;
 import org.springframework.data.mongodb.repository.MongoRepository;
 import tn.kamel.backend.model.Product;
 
-public interface ProductRepository extends MongoRepository<Product, String> {}
+import java.util.Optional;
+
+public interface ProductRepository extends MongoRepository<Product, String> {
+    Optional<Product> findByK(String k);
+}

@@ -1,7 +1,7 @@
 package tn.kamel.backend.web;
 
-import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -15,6 +15,7 @@ import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -23,13 +24,9 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-
 import tn.kamel.backend.dto.ContactRequest;
 import tn.kamel.backend.dto.OrderRequest;
-import tn.kamel.backend.model.ContactMessage;
-import tn.kamel.backend.model.Order;
-import tn.kamel.backend.model.Product;
+import tn.kamel.backend.model.*;
 import tn.kamel.backend.repo.ContactMessageRepository;
 import tn.kamel.backend.repo.OrderRepository;
 import tn.kamel.backend.repo.ProductRepository;
@@ -41,21 +38,24 @@ public class ApiController {
 
     private static final Logger log = LoggerFactory.getLogger(ApiController.class);
 
+    private static final int MAX_DESCRIPTION_LENGTH = 500;
+
     private final ProductRepository productRepository;
     private final OrderRepository orderRepository;
     private final ContactMessageRepository contactMessageRepository;
-    private final ObjectMapper objectMapper;
 
     private final String UPLOAD_DIR = "uploads/";
 
+    /** URL publique du backend (application.properties : app.public-base-url=https://api.mon-domaine.tn) */
+    @Value("${app.public-base-url:http://localhost:9000}")
+    private String publicBaseUrl;
+
     public ApiController(ProductRepository productRepository,
                          OrderRepository orderRepository,
-                         ContactMessageRepository contactMessageRepository,
-                         ObjectMapper objectMapper) {
+                         ContactMessageRepository contactMessageRepository) {
         this.productRepository = productRepository;
         this.orderRepository = orderRepository;
         this.contactMessageRepository = contactMessageRepository;
-        this.objectMapper = objectMapper;
     }
 
     // ==========================================
@@ -78,100 +78,101 @@ public class ApiController {
         return product.map(ResponseEntity::ok).orElseGet(() -> ResponseEntity.notFound().build());
     }
 
-    /**
-     * 2. AJOUTER un produit avec une image optionnelle
-     */
     @PostMapping(value = "/products", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     public Product createProduct(
-            @RequestPart("product") String productInput,
+            @RequestParam("n") String name,
+            @RequestParam("c") ProductCategory category,
+            @RequestParam(value = "d", required = false) String description,
+            @RequestParam(value = "p", required = false) String price,
+            @RequestParam(value = "promo", required = false, defaultValue = "false") boolean promo,
+            @RequestParam(value = "promoPercent", required = false) Integer promoPercent,
+            @RequestParam(value = "new", required = false, defaultValue = "false") boolean isNew,
+            @RequestParam(value = "a", required = false, defaultValue = "DISPONIBLE") ProductAvailability availability,
             @RequestPart(value = "file", required = false) MultipartFile file) {
 
-        Product product;
-        try {
-            product = objectMapper.readValue(productInput, Product.class);
-        } catch (Exception e) {
-            product = new Product();
-            product.setN(productInput);
+        if (name == null || name.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Le nom (n) est obligatoire");
         }
 
-        // Si l'ID est "string" ou vide, on le met à null pour que MongoDB en génère un vrai
-        if (product.getId() != null && (product.getId().isEmpty() || product.getId().equals("string"))) {
-            product.setId(null);
-        }
-
-        // CORRECTION ROBUSTE : S'assurer que le champ 'k' n'est jamais null pour éviter l'index unique MongoDB (DuplicateKeyException)
-        if (product.getK() == null || product.getK().trim().isEmpty() || product.getK().equalsIgnoreCase("null")) {
-            product.setK(UUID.randomUUID().toString());
-        }
+        Product product = new Product();
+        product.setK(UUID.randomUUID().toString());
+        product.setN(name.trim());
+        product.setD(cleanDescription(description));
+        product.setC(category.getLabel());
+        product.setNew(isNew);
+        product.setA(availability.getLabel());
+        applyPricing(product, blankToNull(price), promo, promoPercent);
 
         try {
             if (file != null && !file.isEmpty()) {
-                String imageUrl = saveFile(file);
-                product.setImg(imageUrl);
+                product.setImg(saveFile(file));
+            } else {
+                log.warn("Création produit '{}' SANS photo (aucun fichier reçu dans le champ 'file')", product.getN());
             }
-
-            log.info("Création d'un nouveau produit avec la clé : {} - Nom : {}", product.getK(), product.getN());
+            log.info("Création produit k={} n={} c={} p={} op={} promo={} new={} description={}",
+                    product.getK(), product.getN(), product.getC(), product.getP(),
+                    product.getOp(), product.getPromo(), product.isNew(),
+                    product.getD() != null ? "oui" : "non");
             return productRepository.save(product);
+        } catch (ResponseStatusException e) {
+            throw e;
         } catch (Exception e) {
-            log.error("ERREUR CRITIQUE LORS DE LA CRÉATION DU PRODUIT : {}", e.getMessage(), e);
+            log.error("Erreur lors de la création du produit : {}", e.getMessage(), e);
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Erreur serveur : " + e.getMessage());
         }
     }
 
-    /**
-     * 3. MODIFIER un produit existant
-     */
     @PutMapping(value = "/products/{id}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<Product> updateProduct(
+    public Product updateProduct(
             @PathVariable String id,
-            @RequestPart("product") String productInput,
+            @RequestParam(value = "n", required = false) String name,
+            @RequestParam(value = "c", required = false) ProductCategory category,
+            @RequestParam(value = "d", required = false) String description,
+            @RequestParam(value = "p", required = false) String price,
+            @RequestParam(value = "promo", required = false) Boolean promo,
+            @RequestParam(value = "promoPercent", required = false) Integer promoPercent,
+            @RequestParam(value = "new", required = false) Boolean isNew,
+            @RequestParam(value = "a", required = false) ProductAvailability availability,
             @RequestPart(value = "file", required = false) MultipartFile file) {
 
-        Optional<Product> optionalProduct = productRepository.findById(id);
-        if (optionalProduct.isPresent()) {
-            try {
-                Product productDetails;
-                try {
-                    productDetails = objectMapper.readValue(productInput, Product.class);
-                } catch (Exception e) {
-                    productDetails = new Product();
-                    productDetails.setN(productInput);
-                }
+        Product product = productRepository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Produit introuvable : " + id));
 
-                Product product = optionalProduct.get();
-                product.setId(id); // On s'assure de garder l'ID existant
+        if (name != null && !name.isBlank()) product.setN(name.trim());
+        if (category != null) product.setC(category.getLabel());
+        if (isNew != null) product.setNew(isNew);
+        if (availability != null) product.setA(availability.getLabel());
 
-                if (productDetails.getN() != null) product.setN(productDetails.getN());
-                if (productDetails.getC() != null) product.setC(productDetails.getC());
-                if (productDetails.getD() != null) product.setD(productDetails.getD());
-                if (productDetails.getP() != null) product.setP(productDetails.getP());
-                if (productDetails.getOp() != null) product.setOp(productDetails.getOp());
-                if (productDetails.getPromo() != null) product.setPromo(productDetails.getPromo());
-                product.setNew(productDetails.isNew());
-                if (productDetails.getA() != null) product.setA(productDetails.getA());
+        // Description : champ absent = on ne touche à rien ; champ vide = on efface la description
+        if (description != null) {
+            product.setD(cleanDescription(description));
+        }
 
-                if (productDetails.getK() != null && !productDetails.getK().trim().isEmpty()) {
-                    product.setK(productDetails.getK());
-                }
+        if (promo != null || price != null || promoPercent != null) {
+            boolean currentlyPromo = product.getPromo() != null;
+            boolean wantPromo = promo != null ? promo : currentlyPromo;
 
-                if (file != null && !file.isEmpty()) {
-                    String imageUrl = saveFile(file);
-                    product.setImg(imageUrl);
-                } else if (productDetails.getImg() != null) {
-                    product.setImg(productDetails.getImg());
-                }
-
-                Product updatedProduct = productRepository.save(product);
-                log.info("Produit mis à jour avec succès, ID : {}", id);
-                return ResponseEntity.ok(updatedProduct);
-
-            } catch (Exception e) {
-                log.error("Erreur lors de la mise à jour du produit : {}", e.getMessage(), e);
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+            String normalPrice = blankToNull(price);
+            if (normalPrice == null) {
+                normalPrice = (currentlyPromo && product.getOp() != null) ? product.getOp() : product.getP();
             }
-        } else {
-            return ResponseEntity.notFound().build();
+            Integer percent = promoPercent != null ? promoPercent : percentOf(product.getPromo());
+            applyPricing(product, normalPrice, wantPromo, percent);
+        }
+
+        try {
+            if (file != null && !file.isEmpty()) {
+                product.setImg(saveFile(file));
+            }
+            Product updated = productRepository.save(product);
+            log.info("Produit mis à jour avec succès, ID : {}", id);
+            return updated;
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("Erreur lors de la mise à jour du produit : {}", e.getMessage(), e);
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Erreur serveur : " + e.getMessage());
         }
     }
 
@@ -184,20 +185,6 @@ public class ApiController {
         } else {
             return ResponseEntity.notFound().build();
         }
-    }
-
-    /** Sauvegarde physique du fichier image */
-    private String saveFile(MultipartFile file) throws IOException {
-        File directory = new File(UPLOAD_DIR);
-        if (!directory.exists()) {
-            directory.mkdirs();
-        }
-
-        String fileName = System.currentTimeMillis() + "_" + file.getOriginalFilename();
-        Path filePath = Paths.get(UPLOAD_DIR + fileName);
-        Files.copy(file.getInputStream(), filePath, StandardCopyOption.REPLACE_EXISTING);
-
-        return "http://localhost:9000/uploads/" + fileName;
     }
 
     // ==========================================
@@ -220,27 +207,31 @@ public class ApiController {
                     continue;
                 }
 
-                Product p = productRepository.findById(l.k()).orElse(null);
+                Product p = productRepository.findByK(l.k()).orElse(null);
+                if (p == null) {
+                    p = productRepository.findById(l.k()).orElse(null);
+                }
+                log.info("Ligne reçue : k={} n={} p={} -> produit en base : {}",
+                        l.k(), l.n(), l.p(), p != null ? p.getN() : "INTROUVABLE");
 
                 String nomProduit;
-                double numericPrice = 0.0;
+                double prix;
 
                 if (p != null) {
                     nomProduit = p.getN();
-                    try {
-                        String cleanPrice = p.getP() != null ? p.getP().replaceAll("[^0-9.]", "") : "0";
-                        if (!cleanPrice.isEmpty()) {
-                            numericPrice = Double.parseDouble(cleanPrice);
-                        }
-                    } catch (Exception ignored) {}
+                    prix = orZero(parseAmount(p.getP()));
                 } else {
                     log.warn("Produit avec la clé '{}' introuvable dans le catalogue.", l.k());
-                    nomProduit = "Article " + l.k();
-                    numericPrice = 0.0;
+                    nomProduit = (l.n() != null && !l.n().isBlank()) ? l.n().trim() : "Article " + l.k();
+                    prix = orZero(parseAmount(l.p()));
                 }
 
                 int qty = l.qty() > 0 ? l.qty() : 1;
-                lines.add(new Order.Line(l.k(), nomProduit, numericPrice, qty));
+                lines.add(new Order.Line(l.k(), nomProduit, prix, qty));
+            }
+
+            if (lines.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Aucun article valide dans la commande.");
             }
 
             Order orderToSave = new Order(
@@ -262,6 +253,8 @@ public class ApiController {
             log.info("Commande enregistrée avec succès, ID : {}", orderId);
             return Map.of("id", orderId);
 
+        } catch (ResponseStatusException e) {
+            throw e;
         } catch (Exception e) {
             log.error("Erreur détaillée lors de l'enregistrement de la commande", e);
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Erreur serveur : " + e.getMessage(), e);
@@ -323,5 +316,98 @@ public class ApiController {
             log.error("Erreur admin messages : {}", e.getMessage());
             return List.of();
         }
+    }
+
+    // ==========================================
+    // 🔧 MÉTHODES UTILITAIRES
+    // ==========================================
+
+    /** Nettoie la description : trim, vide -> null, limitée à 500 caractères. */
+    private String cleanDescription(String d) {
+        if (d == null) return null;
+        String t = d.trim();
+        if (t.isEmpty()) return null;
+        if (t.length() > MAX_DESCRIPTION_LENGTH) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "La description est trop longue (maximum " + MAX_DESCRIPTION_LENGTH + " caractères)");
+        }
+        return t;
+    }
+
+    private void applyPricing(Product product, String normalPrice, boolean promo, Integer percent) {
+        if (promo) {
+            if (percent == null || percent < 1 || percent > 99) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Promotion activée : promoPercent doit être compris entre 1 et 99");
+            }
+            product.setPromo("-" + percent + "%");
+
+            Double original = parseAmount(normalPrice);
+            if (original != null) {
+                product.setOp(formatDt(original));
+                product.setP(formatDt(original * (100 - percent) / 100.0));
+            } else {
+                product.setOp(null);
+                product.setP(normalPrice);
+            }
+        } else {
+            product.setPromo(null);
+            product.setOp(null);
+            product.setP(normalPrice);
+        }
+    }
+
+    private Integer percentOf(String promoLabel) {
+        if (promoLabel == null) return null;
+        String digits = promoLabel.replaceAll("[^0-9]", "");
+        try { return digits.isEmpty() ? null : Integer.valueOf(digits); }
+        catch (NumberFormatException e) { return null; }
+    }
+
+    private String blankToNull(String s) {
+        return (s == null || s.isBlank() || s.equalsIgnoreCase("null") || s.equals("string")) ? null : s.trim();
+    }
+
+    private Double parseAmount(String s) {
+        if (s == null) return null;
+        String digits = s.replaceAll("[^0-9.,]", "").replace(',', '.');
+        try { return digits.isEmpty() ? null : Double.parseDouble(digits); }
+        catch (NumberFormatException e) { return null; }
+    }
+
+    private double orZero(Double v) {
+        return v != null ? v : 0.0;
+    }
+
+    private String formatDt(double v) {
+        double r = Math.round(v * 100) / 100.0;
+        return (r == Math.floor(r) ? String.valueOf((long) r) : String.valueOf(r)) + " DT";
+    }
+
+    private String saveFile(MultipartFile file) throws IOException {
+        String contentType = file.getContentType();
+        String lowerName = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase();
+        boolean imageByType = contentType != null && contentType.startsWith("image/");
+        boolean imageByExt = lowerName.matches(".*\\.(png|jpe?g|webp|gif|avif|jfif|bmp)$");
+        log.info("Fichier reçu : nom={} type={} taille={} octets", file.getOriginalFilename(), contentType, file.getSize());
+        if (!imageByType && !imageByExt) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Le fichier doit être une image (png, jpg, webp...) — type reçu : " + contentType);
+        }
+
+        Files.createDirectories(Paths.get(UPLOAD_DIR));
+
+        String original = file.getOriginalFilename() == null ? "image" : file.getOriginalFilename();
+        original = original.replace('\\', '/');
+        original = original.substring(original.lastIndexOf('/') + 1);
+        String safeName = original.replaceAll("[^a-zA-Z0-9._-]", "_");
+
+        String fileName = System.currentTimeMillis() + "_" + safeName;
+        Path filePath = Paths.get(UPLOAD_DIR).resolve(fileName).normalize();
+        try (InputStream in = file.getInputStream()) {
+            Files.copy(in, filePath, StandardCopyOption.REPLACE_EXISTING);
+        }
+
+        return publicBaseUrl + "/uploads/" + fileName;
     }
 }
