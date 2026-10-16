@@ -13,10 +13,15 @@ public record Order(
         String tel,
         String delai,
         String paiement,
-        String note,
-        List<Line> lignes,
-        String statut,      // NOUVELLE / CONFIRMEE / ANNULEE
+        String note,         // Message / note du client
+        List<Line> lignes,   // Liste des produits commandés
+        String statut,       // Ex: "NOUVELLE"
         Instant createdAt
 ) {
-    public record Line(String k, String nom, String prix, int qty) {}
+    public record Line(
+            String k,       // Clé du produit (ex: "mtb", "city")
+            String nom,     // Nom du produit
+            double prix,    // Prix unitaire
+            int qty         // Quantité
+    ) {}
 }
