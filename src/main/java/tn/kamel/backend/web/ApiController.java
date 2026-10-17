@@ -47,7 +47,7 @@ public class ApiController {
     private final String UPLOAD_DIR = "uploads/";
 
     /** URL publique du backend (application.properties : app.public-base-url=https://api.mon-domaine.tn) */
-    @Value("${app.public-base-url:http://localhost:9000}")
+    @Value("${app.public-base-url:https://adminkamelbackend.onrender.com}")
     private String publicBaseUrl;
 
     public ApiController(ProductRepository productRepository,
