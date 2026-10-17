@@ -12,7 +12,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-
+import com.cloudinary.Cloudinary;
+import com.cloudinary.utils.ObjectUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -25,6 +26,7 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 import jakarta.validation.Valid;
+import tn.kamel.backend.config.CloudinaryConfig;
 import tn.kamel.backend.dto.ContactRequest;
 import tn.kamel.backend.dto.OrderRequest;
 import tn.kamel.backend.model.*;
@@ -44,6 +46,7 @@ public class ApiController {
 
     private static final int MAX_DESCRIPTION_LENGTH = 500;
 
+
     private final ProductRepository productRepository;
     private final OrderRepository orderRepository;
     private final ContactMessageRepository contactMessageRepository;
@@ -54,12 +57,16 @@ public class ApiController {
     @Value("${app.public-base-url:https://kamel-backend-2.onrender.com}")
     private String publicBaseUrl;
 
+    private final Cloudinary cloudinary;
+
     public ApiController(ProductRepository productRepository,
                          OrderRepository orderRepository,
-                         ContactMessageRepository contactMessageRepository) {
+                         ContactMessageRepository contactMessageRepository,
+                         Cloudinary cloudinary) {
         this.productRepository = productRepository;
         this.orderRepository = orderRepository;
         this.contactMessageRepository = contactMessageRepository;
+        this.cloudinary = cloudinary;
     }
 
     // ==========================================
@@ -388,19 +395,12 @@ public class ApiController {
                     "Le fichier doit être une image (png, jpg, webp...) — type reçu : " + contentType);
         }
 
-        Files.createDirectories(Paths.get(UPLOAD_DIR));
+        @SuppressWarnings("rawtypes")
+        Map result = cloudinary.uploader().upload(file.getBytes(),
+                ObjectUtils.asMap(
+                        "folder", "kamel",
+                        "resource_type", "image"));
 
-        String original = file.getOriginalFilename() == null ? "image" : file.getOriginalFilename();
-        original = original.replace('\\', '/');
-        original = original.substring(original.lastIndexOf('/') + 1);
-        String safeName = original.replaceAll("[^a-zA-Z0-9._-]", "_");
-
-        String fileName = System.currentTimeMillis() + "_" + safeName;
-        Path filePath = Paths.get(UPLOAD_DIR).resolve(fileName).normalize();
-        try (InputStream in = file.getInputStream()) {
-            Files.copy(in, filePath, StandardCopyOption.REPLACE_EXISTING);
-        }
-
-        return publicBaseUrl + "/uploads/" + fileName;
+        return (String) result.get("secure_url");
     }
 }
