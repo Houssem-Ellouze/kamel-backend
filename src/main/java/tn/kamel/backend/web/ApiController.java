@@ -24,6 +24,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
+import jakarta.validation.Valid;
 import tn.kamel.backend.dto.ContactRequest;
 import tn.kamel.backend.dto.OrderRequest;
 import tn.kamel.backend.model.*;
@@ -31,9 +32,12 @@ import tn.kamel.backend.repo.ContactMessageRepository;
 import tn.kamel.backend.repo.OrderRepository;
 import tn.kamel.backend.repo.ProductRepository;
 
+/*
+ * CORS : géré uniquement par CorsConfig (origines de app.cors.allowed-origins).
+ * L'ancien @CrossOrigin(origins = "*") a été retiré : il autorisait n'importe quel site.
+ */
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(origins = "*")
 public class ApiController {
 
     private static final Logger log = LoggerFactory.getLogger(ApiController.class);
@@ -46,7 +50,7 @@ public class ApiController {
 
     private final String UPLOAD_DIR = "uploads/";
 
-    /** URL publique du backend (application.properties : app.public-base-url=https://api.mon-domaine.tn) */
+    /** URL publique du backend (application.properties : app.public-base-url) */
     @Value("${app.public-base-url:https://kamel-backend-2.onrender.com}")
     private String publicBaseUrl;
 
@@ -67,7 +71,7 @@ public class ApiController {
         try {
             return productRepository.findAll();
         } catch (Exception e) {
-            log.error("Erreur lors de la récupération des produits : {}", e.getMessage());
+            log.error("Erreur lors de la récupération des produits : {}", e.getMessage(), e);
             return List.of();
         }
     }
@@ -260,19 +264,16 @@ public class ApiController {
     // ✉️ GESTION DES CONTACTS
     // ==========================================
 
+    /** @Valid : applique les règles de ContactRequest (nom, tel 8-20 caractères, message). Sinon -> 400. */
     @PostMapping("/contact")
     @ResponseStatus(HttpStatus.CREATED)
-    public Map<String, String> contact(@RequestBody ContactRequest req) {
-        if (req == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "La requête de contact est vide");
-        }
-
+    public Map<String, String> contact(@Valid @RequestBody ContactRequest req) {
         try {
             ContactMessage msg = new ContactMessage(
                     null,
-                    req.nom() != null ? req.nom().trim() : "",
-                    req.tel() != null ? req.tel().trim() : "",
-                    req.message() != null ? req.message().trim() : "",
+                    req.nom().trim(),
+                    req.tel().trim(),
+                    req.message().trim(),
                     Instant.now()
             );
 
@@ -283,7 +284,8 @@ public class ApiController {
 
         } catch (Exception e) {
             log.error("Erreur enregistrement contact : {}", e.getMessage(), e);
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Erreur sauvegarde contact : " + e.getMessage());
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Erreur sauvegarde contact : " + e.getMessage());
         }
     }
 
@@ -294,10 +296,9 @@ public class ApiController {
     @GetMapping("/admin/orders")
     public List<Order> adminOrders() {
         try {
-            if (orderRepository == null) return List.of();
             return orderRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt"));
         } catch (Exception e) {
-            log.error("Erreur admin orders : {}", e.getMessage());
+            log.error("Erreur admin orders : {}", e.getMessage(), e);
             return List.of();
         }
     }
@@ -305,10 +306,9 @@ public class ApiController {
     @GetMapping("/admin/messages")
     public List<ContactMessage> adminMessages() {
         try {
-            if (contactMessageRepository == null) return List.of();
             return contactMessageRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt"));
         } catch (Exception e) {
-            log.error("Erreur admin messages : {}", e.getMessage());
+            log.error("Erreur admin messages : {}", e.getMessage(), e);
             return List.of();
         }
     }
